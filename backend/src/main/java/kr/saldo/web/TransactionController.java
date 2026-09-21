@@ -89,6 +89,20 @@ public class TransactionController {
     transactions.delete(transaction);
   }
 
+  @PutMapping("/{transactionId}")
+  public LedgerTransaction update(
+    @PathVariable UUID transactionId,
+    @Valid @RequestBody CreateTransaction request,
+    HttpSession session
+  ) {
+    var user = currentUser.require(session);
+    var transaction = transactions.findByIdAndUserId(transactionId, user.getId())
+      .orElseThrow(() -> new org.springframework.web.server.ResponseStatusException(HttpStatus.NOT_FOUND));
+    Instant occurredAt = request.transactedAt() == null ? transaction.getTransactedAt() : request.transactedAt();
+    transaction.update(request.merchant(), request.category(), request.amount(), request.type(), occurredAt);
+    return transactions.save(transaction);
+  }
+
   public record CreateTransaction(
     @NotBlank @Size(max = 120) String merchant,
     @NotBlank @Size(max = 40) String category,

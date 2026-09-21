@@ -62,7 +62,7 @@ public class OverviewController {
     List<MonthlyPoint> monthly = new ArrayList<>();
     monthlyTotals.forEach((month, totals) -> monthly.add(new MonthlyPoint(month.toString(), totals[0], totals[1])));
     List<RecurringChargeView> recurring = recurringCharges.findByUserIdAndActiveTrueOrderByDayOfMonthAsc(user.getId()).stream()
-      .map(value -> new RecurringChargeView(value.getId(), value.getName(), value.getCategory(), value.getAmount(), value.getDayOfMonth()))
+      .map(value -> new RecurringChargeView(value.getId(), value.getName(), value.getCategory(), value.getAmount(), value.getDayOfMonth(), value.getLastPaidAt()))
       .toList();
     return new Overview(income, expense, income - expense, categories, (int) Math.min(Integer.MAX_VALUE, transactions.countByUserId(user.getId())), monthly, recurring);
   }
@@ -78,5 +78,5 @@ public class OverviewController {
   ) {}
 
   public record MonthlyPoint(String month, long income, long expense) {}
-  public record RecurringChargeView(UUID id, String name, String category, long amount, int dayOfMonth) {}
+  public record RecurringChargeView(UUID id, String name, String category, long amount, int dayOfMonth, java.time.Instant lastPaidAt) {}
 }

@@ -11,5 +11,6 @@ __pycache__
 *.log
 work/
 backend/.local-tools/
+.m2/
 target/
 frontend/pnpm-workspace.yaml

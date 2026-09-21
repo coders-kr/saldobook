@@ -46,4 +46,12 @@ public class LedgerTransaction {
   public Instant getTransactedAt() { return transactedAt; }
   public String getSource() { return source; }
   public String getExternalId() { return externalId; }
+
+  public void update(String merchant, String category, long amount, String type, Instant transactedAt) {
+    this.merchant = merchant;
+    this.category = category;
+    this.amount = amount;
+    this.type = type;
+    this.transactedAt = transactedAt;
+  }
 }

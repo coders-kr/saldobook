@@ -23,6 +23,9 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
 import java.util.UUID;
+import java.time.Instant;
+import java.time.YearMonth;
+import java.time.ZoneId;
 
 @RestController
 @RequestMapping("/api/recurring")
@@ -43,6 +46,31 @@ public class RecurringChargeController {
     return recurringCharges.findByUserIdAndActiveTrueOrderByDayOfMonthAsc(currentUser.require(session).getId()).stream()
       .map(RecurringChargeController::response)
       .toList();
+  }
+
+  @org.springframework.web.bind.annotation.PutMapping("/{chargeId}")
+  @Transactional
+  public RecurringChargeResponse update(
+    @PathVariable UUID chargeId,
+    @Valid @RequestBody CreateRecurringCharge request,
+    HttpSession session
+  ) {
+    var charge = recurringCharges.findByIdAndUserId(chargeId, currentUser.require(session).getId())
+      .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "고정비를 찾을 수 없습니다."));
+    charge.update(request.name(), request.category(), request.amount(), request.dayOfMonth());
+    return response(recurringCharges.save(charge));
+  }
+
+  @PostMapping("/{chargeId}/paid")
+  @Transactional
+  public RecurringChargeResponse togglePaid(@PathVariable UUID chargeId, HttpSession session) {
+    var charge = recurringCharges.findByIdAndUserId(chargeId, currentUser.require(session).getId())
+      .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "고정비를 찾을 수 없습니다."));
+    YearMonth currentMonth = YearMonth.now(ZoneId.of("Asia/Seoul"));
+    Instant lastPaidAt = charge.getLastPaidAt();
+    boolean paidThisMonth = lastPaidAt != null && YearMonth.from(lastPaidAt.atZone(ZoneId.of("Asia/Seoul"))).equals(currentMonth);
+    if (paidThisMonth) charge.markUnpaid(); else charge.markPaid(Instant.now());
+    return response(recurringCharges.save(charge));
   }
 
   @PostMapping
@@ -71,10 +99,10 @@ public class RecurringChargeController {
   }
 
   private static RecurringChargeResponse response(RecurringCharge charge) {
-    return new RecurringChargeResponse(charge.getId(), charge.getName(), charge.getCategory(), charge.getAmount(), charge.getDayOfMonth());
+    return new RecurringChargeResponse(charge.getId(), charge.getName(), charge.getCategory(), charge.getAmount(), charge.getDayOfMonth(), charge.getLastPaidAt());
   }
 
-  public record RecurringChargeResponse(UUID id, String name, String category, long amount, int dayOfMonth) {}
+  public record RecurringChargeResponse(UUID id, String name, String category, long amount, int dayOfMonth, Instant lastPaidAt) {}
 
   public record CreateRecurringCharge(
     @NotBlank @Size(max = 120) String name,

@@ -4,6 +4,7 @@ import {
   ArrowDownLeft,
   ArrowUpRight,
   CalendarClock,
+  Check,
   ChevronRight,
   CircleHelp,
   Compass,
@@ -16,6 +17,7 @@ import {
   LockKeyhole,
   LogOut,
   Menu,
+  Pencil,
   Plus,
   PiggyBank,
   RefreshCw,
@@ -78,6 +80,7 @@ type RecurringCharge = {
   category: string;
   amount: number;
   dayOfMonth: number;
+  lastPaidAt?: string | null;
 };
 
 const emptyOverview: Overview = {
@@ -154,6 +157,9 @@ const money = (value: number) => `${value.toLocaleString("ko-KR")}원`;
 const signOutUrl = "/api/auth/logout";
 const writeHeaders = { "X-Saldo-Request": "web" };
 const dateInputValue = () => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Seoul" }).format(new Date());
+const dateInputFromIso = (value?: string) => value
+  ? new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Seoul" }).format(new Date(value))
+  : dateInputValue();
 
 async function responseMessage(response: Response, fallback: string) {
   try {
@@ -187,6 +193,8 @@ export default function HomePage() {
     accounts: [],
   });
   const [modal, setModal] = useState<"bank" | "add" | "budget" | "recurring" | "help" | "settings" | null>(null);
+  const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
+  const [editingRecurring, setEditingRecurring] = useState<RecurringCharge | null>(null);
   const [filter, setFilter] = useState<"all" | "EXPENSE" | "INCOME">("all");
   const [search, setSearch] = useState("");
   const [scenarioAmount, setScenarioAmount] = useState(0);
@@ -359,7 +367,7 @@ export default function HomePage() {
 
   const needsSetup = overview.transactionCount === 0 && budget.amount === 0;
 
-  const recurringCharges = overview.recurringCharges ?? [];
+  const recurringCharges = useMemo(() => overview.recurringCharges ?? [], [overview.recurringCharges]);
   const recurringTotal = useMemo(
     () => recurringCharges.reduce((total, charge) => total + charge.amount, 0),
     [recurringCharges],
@@ -389,14 +397,14 @@ export default function HomePage() {
     window.setTimeout(() => setToast(""), 3000);
   }
 
-  async function addTransaction(event: FormEvent<HTMLFormElement>) {
+  async function saveTransaction(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSaving(true);
     const form = event.currentTarget;
     const data = new FormData(form);
     try {
-      const response = await fetch("/api/transactions", {
-        method: "POST",
+      const response = await fetch(editingTransaction ? `/api/transactions/${editingTransaction.id}` : "/api/transactions", {
+        method: editingTransaction ? "PUT" : "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json", ...writeHeaders },
         body: JSON.stringify({
@@ -413,8 +421,9 @@ export default function HomePage() {
       if (!response.ok) throw new Error("저장하지 못했습니다.");
       await loadPrivateData(Boolean(auth?.openBankingEnabled));
       setModal(null);
+      setEditingTransaction(null);
       form.reset();
-      flash("내 가계부에 안전하게 저장했어요.");
+      flash(editingTransaction ? "거래 내역을 수정했어요." : "내 가계부에 안전하게 저장했어요.");
     } catch (error) {
       flash(error instanceof Error ? error.message : "저장하지 못했습니다.");
     } finally {
@@ -422,14 +431,14 @@ export default function HomePage() {
     }
   }
 
-  async function addRecurringCharge(event: FormEvent<HTMLFormElement>) {
+  async function saveRecurringCharge(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSaving(true);
     const form = event.currentTarget;
     const data = new FormData(form);
     try {
-      const response = await fetch("/api/recurring", {
-        method: "POST",
+      const response = await fetch(editingRecurring ? `/api/recurring/${editingRecurring.id}` : "/api/recurring", {
+        method: editingRecurring ? "PUT" : "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json", ...writeHeaders },
         body: JSON.stringify({
@@ -442,10 +451,29 @@ export default function HomePage() {
       if (!response.ok) throw new Error(await responseMessage(response, "고정비를 저장하지 못했습니다."));
       await loadPrivateData(Boolean(auth?.openBankingEnabled));
       setModal(null);
+      setEditingRecurring(null);
       form.reset();
-      flash("매달 반복되는 고정비를 저장했어요.");
+      flash(editingRecurring ? "고정비 정보를 수정했어요." : "매달 반복되는 고정비를 저장했어요.");
     } catch (error) {
       flash(error instanceof Error ? error.message : "고정비를 저장하지 못했습니다.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function toggleRecurringPaid(charge: RecurringCharge) {
+    setSaving(true);
+    try {
+      const response = await fetch(`/api/recurring/${charge.id}/paid`, {
+        method: "POST",
+        credentials: "include",
+        headers: writeHeaders,
+      });
+      if (!response.ok) throw new Error(await responseMessage(response, "고정비 상태를 저장하지 못했습니다."));
+      await loadPrivateData(Boolean(auth?.openBankingEnabled));
+      flash(isPaidThisMonth(charge) ? "이번 달 결제 표시를 해제했어요." : "이번 달 결제 완료로 표시했어요.");
+    } catch (error) {
+      flash(error instanceof Error ? error.message : "고정비 상태를 저장하지 못했습니다.");
     } finally {
       setSaving(false);
     }
@@ -590,6 +618,44 @@ export default function HomePage() {
     }
   }
 
+  async function deleteAccount() {
+    if (!window.confirm("회원 탈퇴를 진행할까요? 저장한 거래·예산·고정비와 연결 정보가 모두 영구 삭제됩니다.")) return;
+    if (!window.confirm("삭제 후에는 복구할 수 없습니다. 정말 탈퇴할까요?")) return;
+    setSaving(true);
+    try {
+      const response = await fetch("/api/account", {
+        method: "DELETE",
+        credentials: "include",
+        headers: writeHeaders,
+      });
+      if (!response.ok) throw new Error(await responseMessage(response, "회원 탈퇴를 처리하지 못했습니다."));
+      setAuth({ authenticated: false });
+      setModal(null);
+      flash("회원 탈퇴가 완료되었습니다.");
+    } catch (error) {
+      flash(error instanceof Error ? error.message : "회원 탈퇴를 처리하지 못했습니다.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function isPaidThisMonth(charge: RecurringCharge) {
+    if (!charge.lastPaidAt) return false;
+    const currentMonth = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Seoul", year: "numeric", month: "2-digit" }).format(new Date());
+    const paidMonth = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Seoul", year: "numeric", month: "2-digit" }).format(new Date(charge.lastPaidAt));
+    return currentMonth === paidMonth;
+  }
+
+  function openTransactionForm(transaction: Transaction | null = null) {
+    setEditingTransaction(transaction);
+    setModal("add");
+  }
+
+  function openRecurringForm(charge: RecurringCharge | null = null) {
+    setEditingRecurring(charge);
+    setModal("recurring");
+  }
+
   async function saveBudget(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSaving(true);
@@ -702,7 +768,7 @@ export default function HomePage() {
             <button className="icon-button refresh-button" onClick={refreshPrivateData} disabled={privateLoading} aria-label="데이터 새로고침" title="데이터 새로고침">
               <RefreshCw size={18} className={privateLoading ? "spin" : ""} />
             </button>
-            <button className="primary-button" onClick={() => setModal("add")}><Plus size={18} /> 내역 추가</button>
+            <button className="primary-button" onClick={() => openTransactionForm()}><Plus size={18} /> 내역 추가</button>
           </div>
         </header>
 
@@ -733,7 +799,7 @@ export default function HomePage() {
             </div>
             <div className="setup-steps">
               <button onClick={() => setModal("budget")}><span>1</span><strong>예산 정하기</strong><small>이번 달 기준액 만들기</small><ChevronRight size={15} /></button>
-              <button onClick={() => setModal("add")}><span>2</span><strong>첫 기록 남기기</strong><small>수입 또는 지출 한 건</small><ChevronRight size={15} /></button>
+              <button onClick={() => openTransactionForm()}><span>2</span><strong>첫 기록 남기기</strong><small>수입 또는 지출 한 건</small><ChevronRight size={15} /></button>
               <button onClick={() => document.getElementById("navigator")?.scrollIntoView({ behavior: "smooth" })}><span>3</span><strong>오늘 한도 보기</strong><small>내비게이터에서 확인</small><ChevronRight size={15} /></button>
             </div>
           </section>
@@ -745,7 +811,7 @@ export default function HomePage() {
           scenarioAmount={scenarioAmount}
           onScenarioChange={setScenarioAmount}
           onOpenBudget={() => setModal("budget")}
-          onOpenTransaction={() => setModal("add")}
+          onOpenTransaction={() => openTransactionForm()}
         />
 
         <section className={`summary-grid ${banking.enabled ? "with-banking" : ""}`} aria-label="개인 자산 요약">
@@ -799,7 +865,7 @@ export default function HomePage() {
         <section className="panel recurring-panel" id="recurring">
           <div className="panel-head">
             <div><span className="eyebrow"><CalendarClock size={12} /> 고정비 루틴</span><h2>빠져나갈 돈을 먼저 잡아두세요</h2></div>
-            <button className="text-button" onClick={() => setModal("recurring")}><Plus size={14} /> 추가</button>
+            <button className="text-button" onClick={() => openRecurringForm()}><Plus size={14} /> 추가</button>
           </div>
           <p className="recurring-intro">월세·통신비·구독료처럼 매달 반복되는 지출을 등록하면, 결제일을 놓치지 않고 이번 달 계획에 미리 반영할 수 있어요.</p>
           {recurringCharges.length === 0 ? (
@@ -807,7 +873,7 @@ export default function HomePage() {
               title="아직 등록한 고정비가 없어요."
               description="첫 고정비를 등록하면 매달 빠져나갈 금액을 한눈에 볼 수 있습니다."
               actionLabel="고정비 등록"
-              onClick={() => setModal("recurring")}
+              onClick={() => openRecurringForm()}
               icon={<CalendarClock size={20} />}
             />
           ) : (
@@ -820,8 +886,10 @@ export default function HomePage() {
                 {recurringCharges.map((charge) => (
                   <div className="recurring-row" key={charge.id}>
                     <span className="recurring-day">{charge.dayOfMonth}일</span>
-                    <span className="recurring-name"><b>{charge.name}</b><small>{charge.category} · 매월 반복</small></span>
+                    <span className="recurring-name"><b>{charge.name}</b><small>{charge.category} · 매월 반복 · {isPaidThisMonth(charge) ? "이번 달 결제 완료" : "이번 달 미결제"}</small></span>
                     <strong>−{money(charge.amount)}</strong>
+                    <button className={`recurring-paid ${isPaidThisMonth(charge) ? "active" : ""}`} aria-label={`${charge.name} ${isPaidThisMonth(charge) ? "결제 완료 표시 해제" : "결제 완료 표시"}`} onClick={() => toggleRecurringPaid(charge)} disabled={saving}><Check size={14} /></button>
+                    <button className="edit-recurring" aria-label={`${charge.name} 고정비 수정`} onClick={() => openRecurringForm(charge)} disabled={saving}><Pencil size={14} /></button>
                     <button className="delete-recurring" aria-label={`${charge.name} 고정비 제거`} onClick={() => deleteRecurringCharge(charge)} disabled={saving}><Trash2 size={14} /></button>
                   </div>
                 ))}
@@ -857,7 +925,7 @@ export default function HomePage() {
               <span className="data-badge">개인 데이터</span>
             </div>
             {categoryEntries.length === 0 ? (
-              <EmptyState title="아직 분석할 지출이 없어요." description="첫 지출을 추가하면 카테고리 분석이 시작됩니다." actionLabel="첫 지출 추가" onClick={() => setModal("add")} />
+              <EmptyState title="아직 분석할 지출이 없어요." description="첫 지출을 추가하면 카테고리 분석이 시작됩니다." actionLabel="첫 지출 추가" onClick={() => openTransactionForm()} />
             ) : (
               <div className="category-bars">
                 {categoryEntries.map(([category, amount], index) => {
@@ -878,7 +946,7 @@ export default function HomePage() {
               <div><span className="eyebrow">거래 내역</span><h2>내가 기록한 돈의 흐름</h2></div>
               <div className="panel-actions">
                 <button className="text-button" onClick={exportCsv}><Download size={14} /> CSV</button>
-                <button className="text-button" onClick={() => setModal("add")}><Plus size={14} /> 추가</button>
+                <button className="text-button" onClick={() => openTransactionForm()}><Plus size={14} /> 추가</button>
               </div>
             </div>
             <label className="transaction-search"><Search size={15} /><input ref={searchInputRef} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="내용이나 카테고리 검색" aria-label="거래 내용이나 카테고리 검색" /></label>
@@ -899,7 +967,7 @@ export default function HomePage() {
                   icon={<SearchX size={20} />}
                 />
               ) : (
-                <EmptyState title="저장된 거래가 없습니다." description="내 기록을 추가하면 이곳에서 흐름을 한눈에 볼 수 있어요." onClick={() => setModal("add")} />
+                <EmptyState title="저장된 거래가 없습니다." description="내 기록을 추가하면 이곳에서 흐름을 한눈에 볼 수 있어요." onClick={() => openTransactionForm()} />
               )
             ) : (
               <div className="transaction-list">
@@ -911,6 +979,7 @@ export default function HomePage() {
                     <span className="tx-name"><b>{transaction.merchant}</b><small>{transaction.category} · {transaction.source === "MANUAL" ? "직접 입력" : "계좌 연동"}</small></span>
                     <span className="tx-date">{new Intl.DateTimeFormat("ko-KR", { month: "short", day: "numeric" }).format(new Date(transaction.transactedAt))}</span>
                     <strong className={transaction.type === "INCOME" ? "income" : ""}>{transaction.type === "EXPENSE" ? "−" : "+"}{money(transaction.amount)}</strong>
+                    <button className="edit-transaction" aria-label={`${transaction.merchant} 수정`} onClick={() => openTransactionForm(transaction)}><Pencil size={14} /></button>
                     <button className="delete-transaction" aria-label={`${transaction.merchant} 삭제`} onClick={() => deleteTransaction(transaction.id)}><Trash2 size={14} /></button>
                   </div>
                 ))}
@@ -929,7 +998,7 @@ export default function HomePage() {
       <nav className="mobile-bottom-nav" aria-label="빠른 메뉴">
         <a href="#dashboard"><LayoutGrid size={17} /><span>홈</span></a>
         <a href="#navigator"><Compass size={17} /><span>내비게이터</span></a>
-        <button onClick={() => setModal("add")}><Plus size={19} /><span>기록</span></button>
+        <button onClick={() => openTransactionForm()}><Plus size={19} /><span>기록</span></button>
         <a href="#transactions"><WalletCards size={17} /><span>거래</span></a>
         <a href="#budget"><Target size={17} /><span>예산</span></a>
       </nav>
@@ -1012,7 +1081,7 @@ export default function HomePage() {
                 {!banking.connected && <OpenBankingGuide />}
               </>
             ) : modal === "recurring" ? (
-              <RecurringChargeForm onSubmit={addRecurringCharge} saving={saving} />
+              <RecurringChargeForm onSubmit={saveRecurringCharge} saving={saving} initial={editingRecurring} />
             ) : modal === "budget" ? (
               <form onSubmit={saveBudget}>
                 <span className="modal-symbol"><PiggyBank size={22} /></span>
@@ -1042,11 +1111,13 @@ export default function HomePage() {
                 <div className="settings-actions">
                   <button className="secondary-button" onClick={() => { exportCsv(); setModal(null); }}><Download size={15} /> 거래 CSV 내보내기</button>
                   <a className="signout-button" href={signOutUrl}><LogOut size={15} /> 로그아웃</a>
+                  <button className="danger-button" onClick={deleteAccount} disabled={saving}><Trash2 size={15} /> 회원 탈퇴 및 데이터 삭제</button>
                 </div>
                 <div className="security-note"><LockKeyhole size={14} /> 거래와 예산은 개인 ID에만 연결되어 있으며, 살도는 소셜 계정 비밀번호를 저장하지 않습니다.</div>
+                <div className="legal-links"><a href="/legal/privacy">개인정보처리방침</a><a href="/legal/terms">이용약관</a></div>
               </div>
             ) : (
-              <AddTransactionForm onSubmit={addTransaction} saving={saving} />
+              <AddTransactionForm onSubmit={saveTransaction} saving={saving} initial={editingTransaction} />
             )}
           </section>
         </div>
@@ -1073,8 +1144,9 @@ function LoginGate({ auth }: { auth: Auth }) {
           </a>
         </div>
         <small>{auth.googleEnabled || auth.kakaoEnabled
-          ? "공식 인증 화면을 사용하며 살도는 소셜 계정 비밀번호를 받거나 저장하지 않습니다."
-          : "운영자가 Google 또는 카카오 OAuth 키를 등록하면 로그인이 활성화됩니다."}</small>
+           ? "공식 인증 화면을 사용하며 살도는 소셜 계정 비밀번호를 받거나 저장하지 않습니다."
+           : "운영자가 Google 또는 카카오 OAuth 키를 등록하면 로그인이 활성화됩니다."}</small>
+        <div className="login-legal-links"><a href="/legal/privacy">개인정보처리방침</a><span>·</span><a href="/legal/terms">이용약관</a></div>
       </section>
       <section className="login-visual" aria-hidden="true">
         <div className="privacy-card">
@@ -1101,33 +1173,33 @@ function EmptyState({ title, description, actionLabel = "첫 내역 추가", onC
   );
 }
 
-function AddTransactionForm({ onSubmit, saving }: { onSubmit: (event: FormEvent<HTMLFormElement>) => void; saving: boolean }) {
+function AddTransactionForm({ onSubmit, saving, initial }: { onSubmit: (event: FormEvent<HTMLFormElement>) => void; saving: boolean; initial: Transaction | null }) {
   return (
     <form onSubmit={onSubmit}>
       <span className="modal-symbol"><Plus size={22} /></span>
-      <h2 id="modal-title">내역 추가</h2>
+      <h2 id="modal-title">{initial ? "내역 수정" : "내역 추가"}</h2>
       <p id="modal-description">입력한 내용은 현재 로그인한 개인 계정에만 저장됩니다.</p>
-      <label>구분<select name="type"><option value="EXPENSE">지출</option><option value="INCOME">수입</option></select></label>
-      <label>내용<input name="merchant" placeholder="예: 월급, 점심 식사" maxLength={120} required /></label>
-      <label>금액<input name="amount" type="number" min="1" max="999999999999" placeholder="0" required /></label>
-      <label>카테고리<select name="category"><option>식비</option><option>생활</option><option>교통</option><option>쇼핑</option><option>급여</option><option>기타</option></select></label>
-      <label>거래 날짜<input name="transactedAt" type="date" defaultValue={dateInputValue()} required /><small className="field-hint">지난 거래도 실제 날짜로 입력할 수 있어요.</small></label>
-      <button className="submit-button" type="submit" disabled={saving}>{saving ? "저장 중…" : "내 가계부에 저장"}</button>
+      <label>구분<select name="type" defaultValue={initial?.type ?? "EXPENSE"}><option value="EXPENSE">지출</option><option value="INCOME">수입</option></select></label>
+      <label>내용<input name="merchant" defaultValue={initial?.merchant ?? ""} placeholder="예: 월급, 점심 식사" maxLength={120} required /></label>
+      <label>금액<input name="amount" type="number" min="1" max="999999999999" defaultValue={initial?.amount || ""} placeholder="0" required /></label>
+      <label>카테고리<select name="category" defaultValue={initial?.category ?? "식비"}><option>식비</option><option>생활</option><option>교통</option><option>쇼핑</option><option>급여</option><option>기타</option></select></label>
+      <label>거래 날짜<input name="transactedAt" type="date" defaultValue={dateInputFromIso(initial?.transactedAt)} required /><small className="field-hint">지난 거래도 실제 날짜로 입력할 수 있어요.</small></label>
+      <button className="submit-button" type="submit" disabled={saving}>{saving ? "저장 중…" : initial ? "수정 내용 저장" : "내 가계부에 저장"}</button>
     </form>
   );
 }
 
-function RecurringChargeForm({ onSubmit, saving }: { onSubmit: (event: FormEvent<HTMLFormElement>) => void; saving: boolean }) {
+function RecurringChargeForm({ onSubmit, saving, initial }: { onSubmit: (event: FormEvent<HTMLFormElement>) => void; saving: boolean; initial: RecurringCharge | null }) {
   return (
     <form onSubmit={onSubmit}>
       <span className="modal-symbol"><CalendarClock size={22} /></span>
-      <h2 id="modal-title">고정비 등록</h2>
+      <h2 id="modal-title">{initial ? "고정비 수정" : "고정비 등록"}</h2>
       <p id="modal-description">매달 반복되는 계획만 저장합니다. 실제 결제나 자동 출금은 하지 않아요.</p>
-      <label>이름<input name="name" placeholder="예: 월세, 휴대폰 요금, 음악 구독" maxLength={120} required /></label>
-      <label>금액<input name="amount" type="number" min="1" max="999999999999" placeholder="0" required /></label>
-      <label>카테고리<select name="category"><option>주거</option><option>통신</option><option>구독</option><option>보험</option><option>교육</option><option>기타</option></select></label>
-      <label>결제 예정일<input name="dayOfMonth" type="number" min="1" max="31" placeholder="예: 25" required /><small className="field-hint">31일을 선택하면 짧은 달에는 말일 기준으로 생각하세요.</small></label>
-      <button className="submit-button" type="submit" disabled={saving}>{saving ? "저장 중…" : "고정비 저장"}</button>
+      <label>이름<input name="name" defaultValue={initial?.name ?? ""} placeholder="예: 월세, 휴대폰 요금, 음악 구독" maxLength={120} required /></label>
+      <label>금액<input name="amount" type="number" min="1" max="999999999999" defaultValue={initial?.amount || ""} placeholder="0" required /></label>
+      <label>카테고리<select name="category" defaultValue={initial?.category ?? "주거"}><option>주거</option><option>통신</option><option>구독</option><option>보험</option><option>교육</option><option>기타</option></select></label>
+      <label>결제 예정일<input name="dayOfMonth" type="number" min="1" max="31" defaultValue={initial?.dayOfMonth || ""} placeholder="예: 25" required /><small className="field-hint">31일을 선택하면 짧은 달에는 말일 기준으로 생각하세요.</small></label>
+      <button className="submit-button" type="submit" disabled={saving}>{saving ? "저장 중…" : initial ? "고정비 수정" : "고정비 저장"}</button>
     </form>
   );
 }
